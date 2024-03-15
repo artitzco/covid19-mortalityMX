@@ -4,7 +4,7 @@ import json
 
 
 def save_json(dict, file):
-    with open(file, 'w') as file:
+    with open(file, 'w', encoding='utf-8') as file:
         json.dump(dict, file, indent=4)
 
 
@@ -24,35 +24,13 @@ def load_object(file_path):
     return loaded_object
 
 
-def dict_search(dictionary, keypath, default=None):
-    if isinstance(keypath, str):
-        keypath = [keypath]
-    for key in keypath[:-1]:
-        if key in dictionary and isinstance(dictionary[key], dict):
-            dictionary = dictionary[key]
-            continue
-        return default
-    return dictionary.get(keypath[-1], default)
-
-
-def dict_set(dictionary, keypath, value, overwrite=False):
-    if isinstance(keypath, str):
-        keypath = [keypath]
-    for key in keypath[:-1]:
-        if key in dictionary:
-            if not isinstance(dictionary[key], dict):
-                if overwrite:
-                    dictionary[key] = {}
-                else:
-                    raise ValueError("The dictionary cannot be overwritten")
-        else:
-            dictionary[key] = {}
-        dictionary = dictionary[key]
-    old = dictionary.get(keypath[-1], None)
-    dictionary[keypath[-1]] = value
-    return old
-
-
-def dict_hash(dictionary):
+def dict_hash(dictionary, ignore_none=True):
+    dictionary = {k: dict_hash(v, ignore_none=ignore_none)
+                  if isinstance(v, dict) else v for k, v in dictionary.items()
+                  if v is not None or not ignore_none}
     return hashlib.sha256(json.dumps(dictionary, sort_keys=True).encode()).hexdigest()
 
+
+def dict_str_hash(dictionary):
+    return hashlib.sha256(json.dumps(
+        {k: str(v) for k, v in dictionary.items()}, sort_keys=True).encode()).hexdigest()
