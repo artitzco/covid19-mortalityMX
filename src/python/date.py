@@ -6,7 +6,6 @@ def nextWeekday(date, n):
 
 
 def weekdayCounter(date1, date2):
-
     sgn = 1
     if date1 > date2:
         date1, date2 = date2, date1
@@ -15,12 +14,12 @@ def weekdayCounter(date1, date2):
     return sgn * (count - 1) if count > 0 else count
 
 
-def str_to_date(item, format='%d/%m/%Y'):
-    return pd.to_datetime(item, format=format)
+#def str_to_date(item, format='%d/%m/%Y'):
+#    return pd.to_datetime(item, format=format)
 
 
-def date_to_str(date, format='%d/%m/%Y'):
-    return date.strftime(format)
+#def date_to_str(date, format='%d/%m/%Y'):
+#    return date.strftime(format)
 
 
 def format_time(seconds):
