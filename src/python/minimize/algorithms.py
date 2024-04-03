@@ -114,18 +114,27 @@ class SearchSpace:
     def is_feasible(self, _: ndBits | Bits):
         return True
 
-    def neighbor(self, bits: ndBits | Bits,
-                 maxmutations: int = None,
-                 probability: float = None,
-                 scale: int = 1):
-        probability = scale * \
-            (1.0 / self.binary.dimension if probability is None else probability)
+    def neighbor(self, bits: ndBits | Bits, probability: float = None, epsilon: int = 1):
+        if probability is None:
+            probability = 1.0 / self.binary.dimension
         count, newbits = bits.mutate(probability, inplace=False)
+        return (newbits if (self.is_feasible(newbits)
+                and count > 0 and count <= epsilon)
+                else self.neighbor(bits, probability, epsilon))
 
-        if (self.is_feasible(newbits) and count > 0 and
-                (maxmutations is None or count <= maxmutations)):
-            return newbits
-        return self.neighbor(bits, maxmutations, probability, scale)
+    def mutation(self, bits: ndBits | Bits, probability: float = None):
+        if probability is None:
+            probability = 1.0 / self.binary.dimension
+        _, newbits = bits.mutate(probability, inplace=False)
+        return (newbits if self.is_feasible(newbits)
+                else self.mutation(bits, probability))
+
+    def crossing(self, bits1: ndBits | Bits, bits2: ndBits | Bits, probability: float | Iterable[float] = 0.5):
+        if not isinstance(probability, float):
+            probability = self.random.uniform(probability[0], probability[1])
+        _, newbits = bits1.cross(bits2, probability, inplace=False)
+        return (newbits if self.is_feasible(newbits)
+                else self.crossing(bits1, bits2, probability))
 
     def new(self, x=None):
         bits = self.binary.new(x)
@@ -206,8 +215,9 @@ class RandomSearch:
         self.eval(self.search_space.new())
         self.save()
 
-    def verbosing(self, verbose):
+    def verbosing(self, verbose, itermax, evalmax, timemax):
         if verbose in [1, 2, 3]:
+
             # 1 bits
             # 2 value
             # 3 value_dict
@@ -215,10 +225,11 @@ class RandomSearch:
                     else (self.xmin.bits if verbose == 1
                           else (self.xmin.value if verbose == 2
                                 else self.xmin.value_dict)))
-            print('\nProgress = ',
-                  json.dumps(dict(iter=self.niter,
-                                  eval=self.neval,
-                                  time=time.time() - self.seconds,
+            session_time = round(time.time() - self.seconds, 3)
+            print('\nSession = ',
+                  json.dumps(dict(iter=f'{self.niter} / {itermax if itermax < sys.maxsize else None}',
+                                  eval=f'{self.neval} / {evalmax if evalmax < sys.maxsize else None}',
+                                  time=f'{session_time} / {timemax}',
                                   fmin=self.fmin,
                                   xmin=xmin), indent=4), '\n')
 
@@ -276,7 +287,7 @@ class RandomSearch:
                 if outfile is not None:
                     with open(outfile, "wb") as file:
                         pickle.dump(self.session, file)
-                self.verbosing(verbose)
+                self.verbosing(verbose, itermax, evalmax, timemax)
 
         return self.session
 

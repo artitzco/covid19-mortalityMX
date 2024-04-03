@@ -4,7 +4,7 @@ from bitarray import bitarray
 import numpy as np
 
 
-def int_to_bits(x, nbits):
+def int_encoder(x, nbits):
     bits = int2ba(x, endian='big')
     n = len(bits)
     if n > nbits:
@@ -14,33 +14,23 @@ def int_to_bits(x, nbits):
     return bits
 
 
-def bits_to_int(x):
+def int_decoder(x):
     return ba2int(x)
 
 
-def cat_to_bits(x, items):
-    bits = bitarray(len(items))
-    if isinstance(x, int):
-        bits[x-1] = 1
-        return bits
-
-    if isinstance(x, set):
-        if len(x) != 1:
-            raise ValueError('The length of "x" must be equals to 1')
-        x = list(x)[0]
-
-    for i, y in enumerate(items):
+def cat_encoder(x, keys):
+    bits = bitarray(len(keys))
+    for i, y in enumerate(keys):
         if x == y:
             bits[i] = 1
             return bits
-
     raise ValueError(f'"{x}" is not a value from "items"')
 
 
-def bits_to_cat(x, items):
+def cat_decoder(x, keys, items):
     for i, x in enumerate(x):
         if x == 1:
-            return items[i]
+            return items[keys[i]]
 
 
 class Bits(bitarray):
@@ -50,7 +40,7 @@ class Bits(bitarray):
 
     def __init__(self, _, decoder=None, random=None, name=None):
         super().__init__()
-        self.decoder = (bits_to_int
+        self.decoder = (int_decoder
                         if decoder is None else decoder)
         self.random = (np.random.RandomState()
                        if random is None else random)
@@ -84,14 +74,28 @@ class Bits(bitarray):
         bits[:] = bits[-num:] + bits[:-num]
         return None if inplace else bits
 
-    def mutate(self, prob, inplace=False):
+    def mutate(self, probability, inplace=False):
         bits = self if inplace else self.copy()
         if len(self) > 0:
-            count = self.random.binomial(len(self), prob)
+            count = self.random.binomial(len(self), probability)
             if count > 0:
                 index = self.random.choice(len(self), count, replace=False)
                 for i in index:
                     bits[i] = not bits[i]
+                return count if inplace else (count, bits)
+        return 0 if inplace else (0, bits)
+
+    def cross(self, inputbits,  probability, inplace=False):
+        if len(inputbits) != len(self):
+            raise ValueError(
+                'self and inputbits cannot have different lentgths')
+        bits = self if inplace else self.copy()
+        if len(self) > 0:
+            count = self.random.binomial(len(self), probability)
+            if count > 0:
+                index = self.random.choice(len(self), count, replace=False)
+                for i in index:
+                    bits[i] = inputbits[i]
                 return count if inplace else (count, bits)
         return 0 if inplace else (0, bits)
 
@@ -120,7 +124,7 @@ class CBits(Bits):
         return super().__new__(cls, _, decoder, random, name)
 
     def __init__(self, _, decoder=None, random=None, name=None):
-        self.decoder = (bits_to_cat
+        self.decoder = (cat_decoder
                         if decoder is None else decoder)
         super().__init__(_, decoder, random, name)
         if isinstance(_, int) and _ > 0:
@@ -135,13 +139,22 @@ class CBits(Bits):
                      random=self.random,
                      name=self.name)
 
-    def mutate(self, prob, inplace=False):
+    def mutate(self, probability, inplace=False):
         bits = self if inplace else self.copy()
-        count = 0
-        if len(self) >= 2 and self.random.rand() < prob:
+        if len(self) >= 2 and self.random.rand() < probability:
             bits.rotate(self.random.randint(1, len(self)), inplace=True)
-            count = 1
-        return count if inplace else (count, bits)
+            return 1 if inplace else (1, bits)
+        return 0 if inplace else (0, bits)
+
+    def cross(self, inputbits,  probability, inplace=False):
+        if len(self) != len(inputbits):
+            raise ValueError(
+                'self bits and inputbits cannot have different lentgths')
+        bits = self if inplace else self.copy()
+        if len(self) >= 1 and self.random.rand() < probability:
+            bits[:] = inputbits[:]
+            return 1 if inplace else (1, bits)
+        return 0 if inplace else (0, bits)
 
     def neighborhood(self):
         return [self.rotate(i) for i in range(1, len(self))]
@@ -183,11 +196,21 @@ class ndBits(tuple):
     def copy(self):
         return ndBits(*self)
 
-    def mutate(self, prob, inplace=False):
+    def mutate(self, probability, inplace=False):
         ndbits = self if inplace else self.copy()
         count = 0
         for bits in ndbits:
-            count += bits.mutate(prob, inplace=True)
+            count += bits.mutate(probability, inplace=True)
+        return count if inplace else (count, ndbits)
+
+    def cross(self, inputndbits, probability, inplace=False):
+        if len(self) != len(inputndbits):
+            raise ValueError(
+                'self ndbits and inputndbits cannot have different lentgths')
+        ndbits = self if inplace else self.copy()
+        count = 0
+        for bits, inputbits in zip(ndbits, inputndbits):
+            count += bits.cross(inputbits, probability, inplace=True)
         return count if inplace else (count, ndbits)
 
     def neighborhood(self):
@@ -213,9 +236,9 @@ class Binary:
         self.size = 2 ** self.nbits
         self.dimension = nbits
         self.seed = seed
-        self.encoder = ((lambda x: int_to_bits(x, nbits))
+        self.encoder = ((lambda x: int_encoder(x, nbits))
                         if encoder is None else encoder)
-        self.decoder = (bits_to_int
+        self.decoder = (int_decoder
                         if decoder is None else decoder)
         self.name = name
         self.BitsClass = BitsClass
@@ -231,16 +254,20 @@ class Binary:
 
     def new(self, x=None):
         kwargs = dict(decoder=self.decoder,
-                      random=self.random, name=self.name)
-        if x is not None:
-            if hasattr(x, '__iter__'):
-                bits = self.BitsClass(x, **kwargs)
-                if len(bits) != self.nbits:
-                    raise ValueError('length of bits must be equals to nbits')
-                return bits
-            else:
-                return self.BitsClass(self.encoder(x), **kwargs)
-        return self.BitsClass(self.nbits, **kwargs).randomize()
+                      random=self.random,
+                      name=self.name)
+        if x is None:
+            return self.BitsClass(self.nbits, **kwargs).randomize()
+        bits = self.BitsClass(x, **kwargs)
+        if len(bits) == self.nbits:
+            return bits
+        raise ValueError('The length of bits must be equals to nbits')
+
+    def encode(self, x):
+        return self.BitsClass(self.encoder(x),
+                              decoder=self.decoder,
+                              random=self.random,
+                              name=self.name)
 
     def __repr__(self):
         return f'Binary({self.nbits})'
@@ -250,23 +277,25 @@ class Binary:
 
 
 class catBinary(Binary):
-    def __init__(self, items=None, nbits=None, seed=None, name=None):
+    def __init__(self, items, seed=None, name=None):
 
-        if items is not None and not isinstance(items, set):
-            raise ValueError('items must be a set instance')
-
-        nbits = len(items) if nbits is None else nbits
-        items = ([str(i+1) for i in range(nbits)]
-                 if items is None else list(items))
-        items.sort()
-        self.items = tuple(items)
-
-        if len(self.items) < nbits:
+        if isinstance(items, set):
+            items = list(items)
+            items.sort()
+            self.keys = tuple(items)
+            self.items = {key: key for key in self.keys}
+        elif isinstance(items, dict):
+            keys = list(items.keys())
+            keys.sort()
+            self.keys = tuple(keys)
+            self.items = items
+        else:
             raise ValueError(
-                f'items has to have at less {nbits} (nbits) elements')
+                '"items" has to be a set instance or a dict instance')
+        nbits = len(self.keys)
 
-        def encoder(x): return cat_to_bits(x, self.items)
-        def decoder(x): return bits_to_cat(x, self.items)
+        def encoder(x): return cat_encoder(x, self.keys)
+        def decoder(x): return cat_decoder(x, self.keys, self.items)
 
         super().__init__(nbits, seed, encoder, decoder, name, CBits)
         self.size = nbits
@@ -276,11 +305,11 @@ class catBinary(Binary):
         return f'catBinary({self.nbits})'
 
     def __str__(self):
-        if len(self.items) == 1:
-            return f'{{{self.items[0]}}}n=1'
-        if len(self.items) == 2:
-            return f'{{{self.items[0]}, {self.items[-1]}}}n=2'
-        return f'{{{self.items[0]},...,{self.items[-1]}}}n={self.nbits}'
+        if len(self.keys) == 1:
+            return f'{{{self.keys[0]}}}n=1'
+        if len(self.keys) == 2:
+            return f'{{{self.keys[0]}, {self.keys[-1]}}}n=2'
+        return f'{{{self.keys[0]},...,{self.keys[-1]}}}n={self.nbits}'
 
 
 class floatBinary(Binary):
@@ -299,11 +328,11 @@ class floatBinary(Binary):
             nbits = 1 if nbits is None else nbits
             nbits = int(max(1, np.ceil(nbits)))
 
-            def encoder(x): return int_to_bits(
+            def encoder(x): return int_encoder(
                 int((self.size - 1) * (x - self.a) / (self.b - self.a)), self.nbits)
 
             def decoder(x): return (
-                self.a + (self.b - self.a) * bits_to_int(x) / (self.size-1))
+                self.a + (self.b - self.a) * int_decoder(x) / (self.size-1))
 
             super().__init__(nbits, seed, encoder, decoder, name)
             self.digits = int(-np.log10((b - a) / (self.size - 1)))
@@ -386,7 +415,7 @@ class ndBinary(tuple):
 
     @property
     def seed(self):
-        raise AttributeError("seed value not available.")
+        raise AttributeError('The "seed" value not available.')
 
     @seed.setter
     def seed(self, seed):
@@ -399,8 +428,15 @@ class ndBinary(tuple):
         if x is not None:
             if len(x) == len(self):
                 return ndBits(*[binary.new(x) for x, binary in zip(x, self)], copy=False)
-            raise ValueError('Length of x must be equals to length of self')
+            raise ValueError(
+                'The length of "x" must be equals to self length')
         return ndBits(*[binary.new() for binary in self], copy=False)
+
+    def encode(self, x):
+        if len(x) == len(self):
+            return ndBits(*[binary.encode(x) for x, binary in zip(x, self)], copy=False)
+        raise ValueError(
+            'The length of "x" must be equals to self length')
 
     def __repr__(self):
         return f'ndBinary{super().__repr__()}'
