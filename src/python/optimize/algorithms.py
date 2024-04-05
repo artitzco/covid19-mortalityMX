@@ -217,7 +217,6 @@ class RandomSearch:
 
     def verbosing(self, verbose, itermax, evalmax, timemax):
         if verbose in [1, 2, 3]:
-
             # 1 bits
             # 2 value
             # 3 value_dict
