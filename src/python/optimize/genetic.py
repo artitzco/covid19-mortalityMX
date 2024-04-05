@@ -1,5 +1,9 @@
-import numpy as np
+from src.python.optimize.algorithms import RandomSearch, SearchSpace, Function
+from src.python.optimize.binary import Binary, ndBinary
+from typing import Iterable
 import pandas as pd
+import numpy as np
+import time
 
 
 def roulette(data, weight=1, size=1, k=1, replace=True, random=None):
@@ -123,3 +127,128 @@ def recombination(search_space, data, size,
             search_space.crossing(*random.choice(data, size=2, replace=False),
                                   probability=crossing_probability), probability=mutation_probability)
     return newpop
+
+
+class GeneticSearch(RandomSearch):
+
+    def __init__(self, function: Function,
+                 search_space: SearchSpace | Iterable[Binary] | Binary | ndBinary,
+                 population: pd.DataFrame | dict,
+                 seed: int = None):
+        super().__init__(function, search_space, False, seed, True)
+        self.population = pd.DataFrame(
+            dict(f=population['f'], x=population['x']))
+
+    @property
+    def history_item(self):
+        if self.kernel_startup:
+            self.kernel_startup = False
+            population = self.population
+        else:
+            population = None
+
+        return dict(iter=self.niter,
+                    eval=self.neval,
+                    time=time.time() - self.seconds,
+                    fmin=self.fmin,
+                    f=self.f,
+                    x=self.x.bits,
+                    population=population)
+
+    @property
+    def session(self):
+        return pd.Series(dict(iter=self.niter,
+                              eval=self.neval,
+                              time=time.time() - self.seconds,
+                              fmin=self.fmin,
+                              xmin=None if self.xmin is None else self.xmin.bits,
+                              history=pd.DataFrame(self.history),
+                              population=self.population))
+
+    def begin(self):
+        self.population['x'] = [
+            self.search_space.new(x) for x in self.population.x]
+
+    def kernel(self):
+        self.kernel_startup = True
+        parents = GeneticSearch.selection(
+            self.search_space, self.population)
+        x = GeneticSearch.reproduction(
+            self.search_space, self.population, parents)
+        f = np.zeros(len(x), dtype=x.dtype)
+        for i in range(len(x)):
+            f[i] = self.eval(x[i])
+            self.save()
+        self.population = GeneticSearch.replacement(
+            self.search_space, self.population, pd.DataFrame(dict(f=f, x=x)))
+        GeneticSearch.elitism(
+            self.search_space, self.population, self.history, (self.fmin, self.xmin))
+
+    def run(self, itermax: int = None, evalmax: int = None, timemax: float = None, session: dict = None, infile: str = None, outfile: str = None, verbose: int = 0):
+        session = super().run(itermax, evalmax, timemax, session, infile, outfile, verbose)
+        subhistory = session.history[~session.history.population.isna()]
+        population = (subhistory.population.tolist() + [self.population])
+        group = session.history.groupby('iter')
+        data = pd.DataFrame(
+            {name:
+             ([0] + group[name].max().to_list()
+              if name != 'fmin' else
+              [pop.f.min() for pop in population])
+             for name in ['iter', 'eval', 'time', 'fmin']})
+        for i, pop in enumerate(population):
+            population[i] = pd.concat(
+                [pd.DataFrame(data.iloc[i].to_dict(), index=pop.index), pop], axis=1)
+        population = pd.concat(population, axis=0)
+        population['iter'] = pd.Series(population['iter'], dtype=int)
+        population['eval'] = pd.Series(population['eval'], dtype=int)
+        session['population'] = population
+        return session
+
+    def selection(search_space: SearchSpace, population: pd.DataFrame):
+        return roulette(population,
+                        weight=population.f.max() - population.f,
+                        size=len(population) // 2,
+                        replace=False,
+                        random=search_space.random)
+
+    def reproduction(search_space: SearchSpace, population: pd.DataFrame, parents: pd.DataFrame):
+        return recombination(search_space, parents.x, size=len(population))
+
+    def replacement(search_space: SearchSpace, population: pd.DataFrame, children: pd.DataFrame):
+        return tournament(population, population.f.max()-population.f,
+                          children, children.f.max()-children.f,
+                          size=int(len(population)),
+                          replace=False,
+                          random=search_space.random)
+
+    def elitism(search_space: SearchSpace, population: pd.DataFrame, history: pd.DataFrame, minimum: tuple):
+        fmin, xmin = minimum
+        fmax = float('-Inf')
+        for i, f in enumerate(population.f):
+            if f > fmax:
+                fmax, imax = f, i
+        population.loc[imax, 'f'] = fmin
+        population.loc[imax, 'x'] = xmin
+
+
+def genetic_search(function: Function,
+                   search_space: SearchSpace | Iterable[Binary] | Binary | ndBinary,
+                   population: pd.DataFrame | dict,
+                   seed: int = None,
+                   itermax: int = None,
+                   evalmax: int = None,
+                   timemax: float = None,
+                   session: dict = None,
+                   infile: str = None,
+                   outfile: str = None,
+                   verbose: int = 0):
+    return GeneticSearch(function=function,
+                         search_space=search_space,
+                         population=population,
+                         seed=seed).run(itermax=itermax,
+                                        evalmax=evalmax,
+                                        timemax=timemax,
+                                        session=session,
+                                        infile=infile,
+                                        outfile=outfile,
+                                        verbose=verbose)
