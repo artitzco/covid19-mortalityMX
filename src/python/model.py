@@ -1,8 +1,6 @@
-import numpy as np
-from tensorflow.keras.activations import relu, elu
-from tensorflow.keras.layers import Input, Dense, Dropout, BatchNormalization, LeakyReLU
-from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Input, Dense, Dropout, BatchNormalization, LeakyReLU, ELU
 from tensorflow.keras.optimizers import Adam, RMSprop, Nadam, SGD
+from tensorflow.keras.models import Sequential
 from tensorflow.keras import regularizers
 
 
@@ -11,7 +9,9 @@ def classification_model(input_dim,
                          deep,
                          optimizer,
                          learning_rate,
+                         momentum,
                          activation,
+                         activation_alpha,
                          initializer,
                          batch_size,
                          epochs,
@@ -20,19 +20,21 @@ def classification_model(input_dim,
                          regularization_factor,
                          dropout,
                          dropout_rate):
-
-    deep = int(max(min(1 + np.log(neurons / 2.0) / np.log(2),  deep), 1))
+    """
+    Recordar condición:
+        deep <= 1 + math.log(neurons / 2.0) / math.log(2)
+    """
 
     # Optimizador
 
     if optimizer == 'Adam':
         optimizer = Adam(learning_rate=learning_rate)
-    elif optimizer == 'RMSprop':
-        optimizer = RMSprop(learning_rate=learning_rate)
     elif optimizer == 'Nadam':
         optimizer = Nadam(learning_rate=learning_rate)
+    elif optimizer == 'RMSprop':
+        optimizer = RMSprop(learning_rate=learning_rate, momentum=momentum)
     elif optimizer == 'SGD':
-        optimizer = SGD(learning_rate=learning_rate)
+        optimizer = SGD(learning_rate=learning_rate, momentum=momentum)
 
     # Inicializador
 
@@ -42,12 +44,10 @@ def classification_model(input_dim,
         kernel_initializer = 'he_normal'
 
     # Activación
-    if activation == 'relu':
-        activation = relu
-    elif activation == 'elu':
-        activation = elu
+    if activation == 'ELU':
+        activation = ELU(activation_alpha)
     elif activation == 'LeakyReLU':
-        activation = LeakyReLU()
+        activation = LeakyReLU(activation_alpha)
 
     # Regularización
     if regularization == 'l1':
@@ -92,18 +92,44 @@ def classification_model(input_dim,
                                                                        verbose=verbose)
 
 
-def validate_classification_model_hparams(hparam):
+def classification_model_hparams(input_dim,
+                                 neurons,
+                                 deep,
+                                 optimizer,
+                                 optimizer_param,
+                                 activation,
+                                 activation_alpha,
+                                 initializer,
+                                 batch_size,
+                                 epochs,
+                                 batch_normalization,
+                                 regularization,
+                                 regularization_factor,
+                                 dropout,
+                                 dropout_rate):
+    def select(value, cond, dtype=float):
+        return dtype(value if cond else 0)
 
-    hparam['input_dim'] = int(hparam['input_dim'])
-    hparam['neurons'] = int(hparam['neurons'])
-    hparam['deep'] = int(
-        max(min(1 + np.log(hparam['neurons'] / 2.0) / np.log(2),  hparam['deep']), 1))
-    hparam['learning_rate'] = float(hparam['learning_rate'])
-    hparam['batch_size'] = int(hparam['batch_size'])
-    hparam['epochs'] = int(hparam['epochs'])
+    return dict(input_dim=int(input_dim),
+                neurons=int(neurons),
+                deep=int(deep),
+                optimizer=optimizer,
+                learning_rate=(select(optimizer_param[0], optimizer == 'Adam') +
+                               select(optimizer_param[1], optimizer == 'Nadam') +
+                               select(optimizer_param[2][0], optimizer == 'RMSprop') +
+                               select(optimizer_param[3][0], optimizer == 'SGD')),
+                momentum=(select(optimizer_param[2][1], optimizer == 'RMSprop') +
+                          select(optimizer_param[3][1], optimizer == 'SGD')),
+                activation=activation,
+                activation_alpha=(select(activation_alpha[0], activation == 'ELU') +
+                                  select(activation_alpha[1], activation == 'LeakyReLU')),
+                initializer=initializer,
+                batch_size=int(batch_size),
+                epochs=int(epochs),
+                batch_normalization=batch_normalization,
+                regularization=regularization,
 
-    hparam['regularization_factor'] = float(hparam['regularization_factor']
-                                            if hparam['regularization'] != 'None' else 0)
-
-    hparam['dropout_rate'] = float(hparam['dropout_rate']
-                                   if hparam['dropout'] else 0)
+                regularization_factor=(select(regularization_factor[0], regularization == 'l1') +
+                                       select(regularization_factor[1], regularization == 'l2')),
+                dropout=dropout,
+                dropout_rate=select(dropout_rate, dropout))

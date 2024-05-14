@@ -49,3 +49,10 @@ def rastrigin(x):
 
 def rosenbrock(x):
     return _itercross(x, lambda x, y, _: 100 * (y - x**2) ** 2 + (x - 1)**2)
+
+
+functions = {'Sphere': dict(function=sphere, interval=[-5.12, 5.12]),
+             'Ackley': dict(function=ackley, interval=[-30, 30]),
+             'Griewank': dict(function=griewank, interval=[-600, 600]),
+             'Rastrigin': dict(function=rastrigin, interval=[-5.12, 5.12]),
+             'Rosenbrock': dict(function=rosenbrock, interval=[-2.048, 2.048])}

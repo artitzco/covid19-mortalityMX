@@ -4,24 +4,19 @@ import json
 
 
 def save_json(dict, file):
-    with open(file, 'w', encoding='utf-8') as file:
-        json.dump(dict, file, indent=4)
+    json.dump(dict, open(file, 'w', encoding='utf-8'), indent=4)
 
 
 def load_json(file):
-    with open(file, 'r') as file:
-        return json.load(file)
+    return json.load(open(file, 'r'))
 
 
-def save_object(obj, file_path):
-    with open(file_path, "wb") as file:
-        pickle.dump(obj, file)
+def save_object(obj, file):
+    pickle.dump(obj, open(file, "wb"))
 
 
-def load_object(file_path):
-    with open(file_path, "rb") as file:
-        loaded_object = pickle.load(file)
-    return loaded_object
+def load_object(file):
+    return pickle.load(open(file, "rb"))
 
 
 def dict_hash(dictionary, ignore_none=True):
