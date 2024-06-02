@@ -66,11 +66,12 @@ class Cooling:
         return self.__str__()
 
     def Not(itermax=2, tmax=0, *_, **__):
+        tmin = tmax
         def fun(x):
             if isinstance(x, Iterable):
                 return np.ones(len(x), dtype=float)
             return 1
-        return Cooling(fun, dict(), None, name='Not', itermax=itermax, tmax=tmax)
+        return Cooling(fun, dict(), None, name='Not', itermax=itermax, tmax=tmax, tmin=tmin)
 
     def Lin(itermax=2, lag=1, tmax=1, tmin=0, *_, **__):
         return Cooling(lambda x: 1 - x, dict(), None, name='Lin',
@@ -117,6 +118,12 @@ class SearchSpace:
         while not self.is_feasible(x):
             x = self.solution.new()
         return x
+
+    def cross(self, x, y, **kwargs):
+        z = self.solution.do('cross', x, y, **kwargs)
+        while not self.is_feasible(z):
+            z = self.solution.do('cross', x, y, **kwargs)
+        return z
 
     def mutate(self, x, **kwargs):
         y = self.solution.do('mutate', x, **kwargs)
@@ -209,13 +216,10 @@ class Search():
                     "argstype='args' is only avaiable for ndSolution instances.")
             self.function = lambda x: function(*self.solution.decode(x))
         elif argstype == 'kwargs':
-            if not isinstance(self.solution, ndSolution):
-                raise ValueError(
-                    "argstype='kwargs' is only avaiable for ndSolution instances.")
-            if self.solution.names is None:
-                raise ValueError(
-                    "solution.names cannot be None.")
-            self.function = lambda x: function(** self.solution.to_dict(x))
+            self.function = lambda x: function(
+                *self.solution.decode(x, to_dict=True))
+        elif argstype == 'literal':
+            self.function = lambda x: function(x)
         else:
             self.function = lambda x: function(self.solution.decode(x))
 
@@ -332,7 +336,7 @@ class Search():
         self.neval += 1
         self.x = x
         self.fx = self.Fx()
-        if self.fx < self.fmin:
+        if self.fx <= self.fmin:
             self.xmin = self.x
             self.fmin = self.fx
         self.eval_saving()
@@ -377,10 +381,10 @@ class LocalSearch(Search):
         self.x = x
         self.fx = self.Fx()
         self.T = self.Tk()
-        if self.fx < self.fact:
+        if self.fx <= self.fact:
             self.xact = self.x
             self.fact = self.fx
-            if self.fx < self.fmin:
+            if self.fx <= self.fmin:
                 self.xmin = self.x
                 self.fmin = self.fx
         elif (self.T > 0 and
@@ -405,12 +409,12 @@ class LocalSearch(Search):
         if self.xact is None:
             self.eval(self.search_space.new())
         else:
-            self.eval(self.search_space.neighbor(
-                self.xact, iter=self.niter))
+            self.eval(self.search_space.neighbor(self.xact))
 
 
 def weightprob(weight):
     weight = np.array(weight, dtype=float)
+    weight -= weight.min()
     n = len(weight)
     y = weight.sum()
     if y == 0:
@@ -421,7 +425,8 @@ def weightprob(weight):
 
 
 def roulette(data, weight=None, size=1, k=1, replace=True, random=None):
-    random = np.random if random is None else random
+    if random is None:
+        random = np.random
     if weight is None:
         weight = np.full(len(weight), 1)
     df = None
@@ -461,6 +466,26 @@ def roulette(data, weight=None, size=1, k=1, replace=True, random=None):
     return df
 
 
+def rank_selection(data, weight=None, s=0.75, size=1, replace=True, random=None):
+    if random is None:
+        random = np.random
+    if weight is None:
+        weight = np.full(len(weight), 1)
+    df = None
+    if isinstance(data, pd.DataFrame):
+        df = data
+        data = np.arange(len(data))
+    i = np.argsort(data)
+    n = len(data)
+    prob = 2*(1-s)/n + 2*i*(2*s-1)/(n**2-n)
+    result = random.choice(data, size=size, replace=replace, p=prob)
+    if df is None:
+        return result
+    df = df.iloc[result]
+    df.reset_index(inplace=True, drop=True)
+    return df
+
+
 def tournament(data1, weight1, data2=None, weight2=None, size=None, replace=True, dim=2, random=None):
     isdf = False
     if isinstance(data1, pd.DataFrame):
@@ -483,10 +508,13 @@ def tournament(data1, weight1, data2=None, weight2=None, size=None, replace=True
         for i in range(size):
             ind = np.arange(dim * i, dim * (i + 1))
             weightmax = -float('Inf')
+            datamax = None
             for j in index1[ind]:
                 if weight1[j] > weightmax:
                     weightmax = weight1[j]
-                    result.append(data1[j])
+                    datamax = data1[j]
+            result.append(datamax)
+
         return df1.iloc[result] if isdf else np.array(result)
 
     dim = int(np.ceil(dim / 2))
@@ -516,6 +544,9 @@ def tournament(data1, weight1, data2=None, weight2=None, size=None, replace=True
 
 class GeneticSearch(Search):
     def __init__(self, function, search_space, initial=None, itermax=None, evalmax=None, timemax=None, infile=None, outfile=None, seed=None, argstype=None, verbose=0) -> None:
+        if isinstance(initial, (int, float)):
+            initial = RandomSearch(function, search_space, itermax=initial,
+                                   seed=seed, argstype=argstype).session.ehistory
         if not isinstance(initial, pd.DataFrame):
             raise ValueError('Initial value must be a pd.Dataframe instance')
         search_space = (SearchSpace(search_space)
@@ -549,45 +580,43 @@ class GeneticSearch(Search):
                     x=[self.solution.write(x) for x in self.population.x])
 
     def kernel(self):
-        parents = GeneticSearch.selection(self)
-        solutions = GeneticSearch.reproduction(self, parents)
-        childs = GeneticSearch.eval_solutions(self, solutions)
-        newpop = GeneticSearch.replacement(self, parents, childs)
-        self.population = GeneticSearch.elitism(self, newpop, parents, childs)
+        parents = self.selection()
+        solutions = self.reproduction(parents)
+        childs = self.eval_solutions(solutions)
+        newpop = self.replacement(parents, childs)
+        self.population = self.elitism(newpop, parents, childs)
 
-    def selection(this):
-        return roulette(this.population,
-                        weight=this.population.fx.max() - this.population.fx,
-                        size=len(this.population)//2,
+    def selection(self):
+        return roulette(self.population,
+                        weight=-self.population.fx,
+                        size=len(self.population)//2,
                         replace=True,
-                        random=this.random)
+                        random=self.random)
 
-    def reproduction(this, parents):
+    def reproduction(self, parents):
         solutions = []
-        for _ in range(len(this.population)):
-            choised = this.random.choice(parents.x, size=2, replace=False)
-            new = this.solution.do(
-                'cross', *choised, iter=this.niter, itermax=this.itermax)
-            new = this.solution.do(
-                'mutate', new, iter=this.niter, itermax=this.itermax)
+        for _ in range(len(self.population)):
+            choised = self.random.choice(parents.x, size=2, replace=False)
+            new = self.search_space.cross(*choised)
+            new = self.search_space.mutate(new)
             solutions.append(new)
         return solutions
 
-    def eval_solutions(this, solutions):
-        return pd.DataFrame(dict(fx=[this.eval(sol) for sol in solutions], x=solutions))
+    def eval_solutions(self, solutions):
+        return pd.DataFrame(dict(fx=[self.eval(sol) for sol in solutions], x=solutions))
 
-    def replacement(this, parents, childs):
-        return tournament(this.population,
-                          this.population.fx.max() - this.population.fx,
+    def replacement(self, parents, childs):
+        return tournament(self.population,
+                          -self.population.fx,
                           childs,
-                          childs.fx.max() - childs.fx,
-                          size=len(this.population),
+                          -childs.fx,
+                          size=len(self.population),
                           replace=False,
-                          random=this.random)
+                          random=self.random)
 
-    def elitism(this, newpop, parents, childs):
-        if this.fmin < min(newpop.fx):
+    def elitism(self, newpop, parents, childs):
+        if self.fmin < min(newpop.fx):
             index = newpop.fx.idxmax()
-            newpop.at[index, 'fx'] = this.fmin
-            newpop.at[index, 'x'] = this.xmin
+            newpop.at[index, 'fx'] = self.fmin
+            newpop.at[index, 'x'] = self.xmin
         return newpop
