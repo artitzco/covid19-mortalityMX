@@ -67,6 +67,7 @@ class Cooling:
 
     def Not(itermax=2, tmax=0, *_, **__):
         tmin = tmax
+
         def fun(x):
             if isinstance(x, Iterable):
                 return np.ones(len(x), dtype=float)
@@ -120,24 +121,22 @@ class SearchSpace:
         return x
 
     def cross(self, x, y, **kwargs):
-        z = self.solution.do('cross', x, y, **kwargs)
-        while not self.is_feasible(z):
-            z = self.solution.do('cross', x, y, **kwargs)
-        return z
+        x = self.solution.cross(x, y, **kwargs)
+        while not self.is_feasible(x):
+            x = self.solution.cross(x, y, **kwargs)
+        return x
 
     def mutate(self, x, **kwargs):
-        y = self.solution.do('mutate', x, **kwargs)
-        while not self.is_feasible(y):
-            y = self.solution.do('mutate', x, **kwargs)
-        return y
+        x = self.solution.mutate(x, **kwargs)
+        while not self.is_feasible(x):
+            x = self.solution.mutate(x, **kwargs)
+        return x
 
     def neighbor(self, x, **kwargs):
-        if isinstance(self.solution, ndSolution) and len(x) > 1:
-            x = x.copy()
-            i = self.random.randint(len(x))
-            x[i] = self.solution[i].do('neighbor', x[i], **kwargs)
-            return x
-        return self.solution.do('neighbor', x, **kwargs)
+        x = self.solution.neighbor(x, **kwargs)
+        while not self.is_feasible(x):
+            x = self.solution.neighbor(x, **kwargs)
+        return x
 
     def __repr__(self) -> str:
         return f'SearchSpace({self.solution})'
@@ -147,34 +146,42 @@ class SearchSpace:
 
 
 class Chronometer:
+
     def __init__(self, initial=0, paused=False):
-        self.start(initial)
-        if paused:
-            self.pause()
+        current_time = time.time()
+        self.start_time = current_time - initial
+        self.paused_time = 0
+        self.paused = paused
+        self.paused = paused
+        self.paused_initial = current_time if paused else None
+        self.last = initial
 
     def start(self, initial=0):
-        self.start_time = time.time()-initial
-        self.paused_time = 0
-        self.paused = False
-        self.paused_start_time = None
+        if self.paused:
+            self.paused_time += time.time() - self.paused_initial
+            self.paused = False
+        else:
+            self.start_time = time.time() - initial
+            self.paused_time = 0
+            self.paused = False
+            self.paused_initial = None
 
     def get(self):
-        current_time = time.time()
         if self.paused:
-            lapsed_time = self.paused_start_time - self.start_time - self.paused_time
+            result = self.paused_initial - self.start_time - self.paused_time
         else:
-            lapsed_time = current_time - self.start_time - self.paused_time
-        return lapsed_time
+            result = time.time() - self.start_time - self.paused_time
+        self.last = result
+        return result
 
     def pause(self):
         if not self.paused:
-            self.paused_start_time = time.time()
+            self.paused_initial = time.time()
             self.paused = True
 
-    def release(self):
-        if self.paused:
-            self.paused_time += time.time() - self.paused_start_time
-            self.paused = False
+    def partial(self):
+        last = self.last
+        return self.get() - last
 
 
 class Search():
@@ -190,26 +197,29 @@ class Search():
                  argstype=None,
                  verbose=0) -> None:
         self.verbose = verbose
-        self.ehistory = []
-        self.ihistory = []
+        self.history = []
+        self.iter_history = []
         self.frozen = False
-        if infile is not None and os.path.exists(infile):
-            if isinstance(infile, str):
-                session = pickle.load(open(infile, "rb"))
-                print(f"Session loaded from '{infile}'.")
+        if infile is not None:
+            if os.path.exists(infile):
+                if isinstance(infile, str):
+                    session = pickle.load(open(infile, "rb"))
+                    print(f"Session loaded from '{infile}'.")
+                else:
+                    session = infile
+                if session.niter > 0 and session.history is not None:
+                    self.history = session.history.to_dict(orient='records')
+                    self.frozen = True
+                if session.iter_history is not None:
+                    self.iter_history = session.iter_history.to_dict(
+                        orient='records')
             else:
-                session = infile
-            if session.niter > 0 and session.ehistory is not None:
-                self.ehistory = self.unpack_ehistory(session.ehistory)
-                if session.ihistory is not None:
-                    self.ihistory = self.unpack_ihistory(session.ihistory)
-                self.frozen = True
+                print(f"Session not found:'{infile}'.")
         self.search_space = (SearchSpace(search_space)
                              if isinstance(search_space, Solution) else search_space)
         self.solution = self.search_space.solution
         if seed is not None:
             self.search_space.seed = seed
-
         if argstype == 'args':
             if not isinstance(self.solution, ndSolution):
                 raise ValueError(
@@ -217,7 +227,7 @@ class Search():
             self.function = lambda x: function(*self.solution.decode(x))
         elif argstype == 'kwargs':
             self.function = lambda x: function(
-                *self.solution.decode(x, to_dict=True))
+                **self.solution.decode(x, to_dict=True))
         elif argstype == 'literal':
             self.function = lambda x: function(x)
         else:
@@ -233,22 +243,24 @@ class Search():
             self.timemax += session.time
         self.niter = 0
         self.neval = 0
-        self.chrono = Chronometer(paused=self.frozen)
+        self.chrono = Chronometer()
         self.xmin = None
         self.fmin = inf
         if initial is not None:
             self.eval(self.solution.read(initial))
         self.begin()
+
         if self.itermax < inf or self.evalmax < inf or self.timemax < inf:
-            while not (self.niter >= self.itermax or
-                       self.neval >= self.evalmax or
-                       self.chrono.get() >= self.timemax):
+            while not (
+                    self.niter >= self.itermax or
+                    self.neval >= self.evalmax or
+                    self.chrono.get() >= self.timemax):
                 self.niter += 1
                 self.kernel()
                 if self.frozen:
-                    if self.niter + 1 == session.niter:
+                    if self.niter == session.niter:
                         self.frozen = False
-                        self.chrono.start(session.time)
+                        self.chrono = Chronometer(initial=session.time)
                 else:
                     self.iter_saving()
         self.chrono.pause()
@@ -259,20 +271,6 @@ class Search():
     @property
     def random(self):
         return self.solution.random
-
-    def unpack_ehistory(self, history):
-        return history.to_dict(orient='records')
-
-    def unpack_ihistory(self, history):
-        return history.to_dict(orient='records')
-
-    def pack_ehistory(self, history):
-        return (None if len(history) == 0
-                else pd.DataFrame(history))
-
-    def pack_ihistory(self, history):
-        return (None if len(history) == 0
-                else pd.DataFrame(history))
 
     def __str__(self) -> str:
         return 'session:\n' + str(self.session)
@@ -288,48 +286,51 @@ class Search():
                               fmin=self.fmin,
                               xmin=(None if self.xmin is None
                                     else self.solution.write(self.xmin)),
-                              ehistory=self.pack_ehistory(self.ehistory),
-                              ihistory=self.pack_ihistory(self.ihistory)
+                              history=(None if len(self.history) == 0
+                                       else pd.DataFrame(self.history)),
+                              iter_history=(None if len(self.iter_history) == 0
+                                            else pd.DataFrame(self.iter_history))
                               ), dtype=object)
 
     @property
     def verbosing(self):
-        return ('\nProgress:'
+        return ('Progress:'
                 f'\n\titer: {self.niter}/{self.itermax}'
                 f'\n\teval: {self.neval}/{self.evalmax}'
-                f'\n\ttime: {round(self.chrono.get(), 3)}/{self.timemax}'
+                f'\n\ttime: {round(self.chrono.get(), 3)}/{None if self.timemax is None else  round(self.timemax, 3)}'
                 f'\n\tfmin: {self.fmin}'
-                f'\n\txmin: {self.solution.decode(self.xmin)}')
+                f'\n\txmin: {None if self.xmin is None else self.solution.decode(self.xmin)}')
 
     def eval_saving(self):
         if not self.frozen:
             self.chrono.pause()
             eval_dict = self.eval_dict
             if eval_dict is not None:
-                self.ehistory.append(eval_dict)
-            if self.verbose == 1:
+                self.history.append(eval_dict)
+            if self.verbose in [1, 3]:
                 print(self.verbosing)
-            self.chrono.release()
+            self.chrono.start()
 
     def iter_saving(self):
         if not self.frozen:
             self.chrono.pause()
             iter_dict = self.iter_dict
             if iter_dict is not None:
-                self.ihistory.append(iter_dict)
-            if self.verbose == 2:
+                self.iter_history.append(iter_dict)
+            if self.verbose == [2, 3]:
                 print(self.verbosing)
-            self.chrono.release()
+            self.chrono.start()
 
     def Fx(self):
         if self.frozen:
-            if self.ehistory[self.neval - 1]['x'] != self.solution.write(self.x):
+            if self.history[self.neval - 1]['x'] != self.solution.write(self.x):
                 raise ValueError("Something went wrong with the generation of random solutions.\n"
                                  "Possible causes:\n"
                                  "\t- Initial conditions have been changed\n"
                                  "\t- The search space has been modified\n"
                                  "\t- A different seed has been used")
-            return self.ehistory[self.neval - 1]['fx']
+
+            return self.history[self.neval - 1]['fx']
         return self.function(self.x)
 
     def eval(self, x):
@@ -412,9 +413,10 @@ class LocalSearch(Search):
             self.eval(self.search_space.neighbor(self.xact))
 
 
-def weightprob(weight):
+def weightprob(weight, abstolute=False):
     weight = np.array(weight, dtype=float)
-    weight -= weight.min()
+    if abstolute:
+        weight -= weight.min()
     n = len(weight)
     y = weight.sum()
     if y == 0:
@@ -435,7 +437,8 @@ def roulette(data, weight=None, size=1, k=1, replace=True, random=None):
         data = np.arange(len(data))
 
     def roulette1(data, weight, size, replace):
-        return random.choice(data, size=size, replace=replace, p=weightprob(weight))
+        return random.choice(data, size=size, replace=replace,
+                             p=weightprob(weight, abstolute=True))
 
     if k == 1:
         result = roulette1(data, weight, size, replace)
@@ -543,10 +546,11 @@ def tournament(data1, weight1, data2=None, weight2=None, size=None, replace=True
 
 
 class GeneticSearch(Search):
+
     def __init__(self, function, search_space, initial=None, itermax=None, evalmax=None, timemax=None, infile=None, outfile=None, seed=None, argstype=None, verbose=0) -> None:
         if isinstance(initial, (int, float)):
             initial = RandomSearch(function, search_space, itermax=initial,
-                                   seed=seed, argstype=argstype).session.ehistory
+                                   seed=seed, argstype=argstype).session.history
         if not isinstance(initial, pd.DataFrame):
             raise ValueError('Initial value must be a pd.Dataframe instance')
         search_space = (SearchSpace(search_space)
@@ -556,18 +560,6 @@ class GeneticSearch(Search):
         super().__init__(function, search_space, None, itermax, evalmax, timemax,
                          infile, outfile, seed, argstype, verbose)
 
-    def unpack_ihistory(self, history):
-        group = history.groupby('niter')
-        history = pd.DataFrame({name: group[name].apply(list)
-                                if name in ('x', 'fx') else group[name].first()
-                                for name in history.columns})
-        return history.to_dict(orient='records')
-
-    def pack_ihistory(self, history):
-        return (None if len(history) == 0
-                else pd.concat([pd.DataFrame(x)
-                                for x in history], axis=0))
-
     def begin(self):
         self.iter_saving()
 
@@ -576,8 +568,9 @@ class GeneticSearch(Search):
         return dict(time=self.chrono.get(),
                     niter=self.niter,
                     neval=self.neval,
-                    fx=self.population.fx.to_list(),
-                    x=[self.solution.write(x) for x in self.population.x])
+                    fmin=self.population.fx.min(),
+                    fmean=self.population.fx.mean(),
+                    fstd=self.population.fx.std())
 
     def kernel(self):
         parents = self.selection()
@@ -595,10 +588,12 @@ class GeneticSearch(Search):
 
     def reproduction(self, parents):
         solutions = []
-        for _ in range(len(self.population)):
+        popsize = len(self.population)
+        for _ in range(popsize):
             choised = self.random.choice(parents.x, size=2, replace=False)
             new = self.search_space.cross(*choised)
-            new = self.search_space.mutate(new)
+            dim = popsize * self.search_space.solution.dimension(new)
+            new = self.search_space.mutate(new, prob=1/dim)
             solutions.append(new)
         return solutions
 
@@ -620,3 +615,108 @@ class GeneticSearch(Search):
             newpop.at[index, 'fx'] = self.fmin
             newpop.at[index, 'x'] = self.xmin
         return newpop
+
+
+def entropy_model(probability, initial_entropy, a=0, b=1, c=1):
+    if hasattr(probability, '__iter__'):
+        return np.array([entropy_model(p, initial_entropy, a, b, c) for p in probability])
+    d = b + (initial_entropy-1) * (b - a)
+    return c + (d-c) * (1-probability)
+
+
+def entropy_model_inv(final_entropy, initial_entropy, a=0, b=1, c=1):
+    if hasattr(final_entropy, '__iter__'):
+        return np.array([entropy_model_inv(e, initial_entropy, a, b, c) for e in final_entropy])
+    d = b + (initial_entropy-1) * (b - a)
+    if c < d:
+        if final_entropy <= c:
+            return 1
+        if final_entropy >= d:
+            return 0
+    else:
+        if final_entropy >= c:
+            return 1
+        if final_entropy <= d:
+            return 0
+    return 1 - (final_entropy-c) / (d-c)
+
+
+class MarkovGeneticSearch(GeneticSearch):
+
+    def __init__(self, function, search_space, entropy_limit=0.05, initial=None, itermax=None,
+                 evalmax=None, timemax=None, infile=None, outfile=None, seed=None, argstype=None, verbose=0) -> None:
+        self.entropy_limit = entropy_limit
+        super().__init__(function, search_space, initial, itermax,
+                         evalmax, timemax, infile, outfile, seed, argstype, verbose)
+
+    def begin(self):
+        if len(self.iter_history) > 0:
+            self.initial_entropy = [hist['initial_entropy']
+                                    for hist in self.iter_history]
+            self.final_entropy = [hist['final_entropy']
+                                  for hist in self.iter_history]
+            self.probability = [hist['probability']
+                                for hist in self.iter_history]
+        else:
+            self.initial_entropy = []
+            self.final_entropy = []
+            self.probability = [float('nan')]
+            self.iter_saving()
+
+    @property
+    def iter_dict(self):
+        self.initial_entropy.append(
+            self.final_entropy[-1] if len(self.final_entropy) > 0 else float('nan'))
+        self.final_entropy.append(
+            self.solution.entropy(self.population.x.tolist()))
+        return dict(time=self.chrono.get(),
+                    niter=self.niter,
+                    neval=self.neval,
+                    fmin=self.population.fx.min(),
+                    fmean=self.population.fx.mean(),
+                    fstd=self.population.fx.std(),
+                    initial_entropy=self.initial_entropy[-1],
+                    final_entropy=self.final_entropy[-1],
+                    probability=self.probability[-1])
+
+    def selection(self):
+        return self.population
+
+    def reproduction(self, parents):
+        entropy = self.solution.entropy(self.population.x.tolist())
+        solutions = []
+        popsize = len(self.population)
+
+        case_a = entropy <= self.entropy_limit
+        case_b = entropy > self.entropy_limit
+        if case_a:
+            prob = entropy_model_inv(
+                final_entropy=self.entropy_limit,
+                initial_entropy=entropy,
+                a=0.0,
+                b=1.0,
+                c=0.95)
+        else:
+            mean_prob = 0
+        for _ in range(popsize):
+            choised = self.random.choice(parents.x, size=2, replace=False)
+            new = self.search_space.cross(*choised)
+            if case_b:
+                dim = popsize * self.search_space.solution.dimension(new)
+                prob = - math.log(self.random.rand()) / dim
+                prob = min(prob, 1)
+                mean_prob += prob
+            new = self.search_space.mutate(new, prob=prob)
+            solutions.append(new)
+        self.probability.append(mean_prob / popsize
+                                if case_b else prob)
+        return solutions
+
+    def replacement(self, _, childs):
+        population = pd.concat([self.population, childs], axis=0)
+        population.reset_index(drop=True, inplace=True)
+        return tournament(population,
+                          -population.fx,
+                          size=len(self.population),
+                          replace=False,
+                          random=self.random)

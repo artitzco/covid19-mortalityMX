@@ -4,22 +4,22 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras import regularizers
 
 
-def classification_model(input_dim,
-                         neurons,
-                         deep,
-                         optimizer,
-                         learning_rate,
-                         momentum,
-                         activation,
-                         activation_alpha,
-                         initializer,
-                         batch_size,
-                         epochs,
-                         batch_normalization,
-                         regularization,
-                         regularization_factor,
-                         dropout,
-                         dropout_rate):
+def model_v1(input_dim,
+             neurons,
+             deep,
+             optimizer,
+             learning_rate,
+             momentum,
+             activation,
+             activation_alpha,
+             initializer,
+             batch_size,
+             epochs,
+             batch_normalization,
+             regularization,
+             regularization_factor,
+             dropout,
+             dropout_rate):
     """
     Recordar condición:
         deep <= 1 + math.log(neurons / 2.0) / math.log(2)
@@ -85,28 +85,31 @@ def classification_model(input_dim,
                   optimizer=optimizer,
                   metrics=['mae'])
 
-    return model, lambda train_set, val_set=None, verbose=1: model.fit(*train_set,
-                                                                       validation_data=val_set,
-                                                                       batch_size=batch_size,
-                                                                       epochs=epochs,
-                                                                       verbose=verbose)
+    return {
+        'model': model,
+        'fit': lambda train_set, val_set=None, verbose=1: model.fit(*train_set,
+                                                                    validation_data=val_set,
+                                                                    batch_size=batch_size,
+                                                                    epochs=epochs,
+                                                                    verbose=verbose)
+    }
 
 
-def classification_model_hparams(input_dim,
-                                 neurons,
-                                 deep,
-                                 optimizer,
-                                 optimizer_param,
-                                 activation,
-                                 activation_alpha,
-                                 initializer,
-                                 batch_size,
-                                 epochs,
-                                 batch_normalization,
-                                 regularization,
-                                 regularization_factor,
-                                 dropout,
-                                 dropout_rate):
+def model_v1_hparams(input_dim,
+                     neurons,
+                     deep,
+                     optimizer,
+                     optimizer_param,
+                     activation,
+                     activation_alpha,
+                     initializer,
+                     batch_size,
+                     epochs,
+                     batch_normalization,
+                     regularization,
+                     regularization_factor,
+                     dropout,
+                     dropout_rate):
     def select(value, cond, dtype=float):
         return dtype(value if cond else 0)
 
