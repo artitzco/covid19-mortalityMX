@@ -8,21 +8,20 @@ class Foldify:
     def __init__(self,
                  size,
                  nfolds=5,
+                 train_prop=None,
                  val_prop=0.2,
-                 ftype='random',
                  sorted=True,
-                 seed=555,
                  weight=None,
                  group=None,
-                 datasets=None):
+                 seed=555,
+                 datasets=None,
+                 ftype='random'):
         size = int(size)
         nfolds = int(nfolds)
+        train_prop = None if train_prop is None else float(train_prop)
         val_prop = float(val_prop)
-        if ftype == 'uniform':
-            nval = int(round(size * val_prop))
-            seed, weight, group = None, None, None
-        elif ftype == 'random':
-            self.random = np.random.RandomState()
+        self.random = np.random.RandomState()
+        if ftype == 'random':
             if group is not None:
                 sub_group = group[np.arange(size)]
                 nval = 0
@@ -30,10 +29,18 @@ class Foldify:
                     nval += int(round(sum(sub_group == lab) * val_prop))
             else:
                 nval = int(round(size * val_prop))
-        train_size = [size - nval] * nfolds
-        val_size = [nval] * nfolds
+            train_size = [size - nval] * nfolds
+            val_size = [nval] * nfolds
+        elif ftype == 'rolling':
+            weight, group = None, None
+            ntrain = int(round(size * train_prop))
+            nval = int(round(ntrain * val_prop))
+            train_size = [ntrain] * nfolds
+            val_size = [nval] * nfolds
+
         self.size = size
         self.nfolds = nfolds
+        self.train_prop = train_prop
         self.val_prop = val_prop
         self.ftype = ftype
         self.sorted = sorted
@@ -48,23 +55,22 @@ class Foldify:
     def info(self):
         return dict(size=self.size,
                     nfolds=self.nfolds,
+                    train_prop=self.train_prop,
                     val_prop=self.val_prop,
-                    ftype=self.ftype,
                     sorted=self.sorted,
                     seed=self.seed,
                     weight='\\non-added\\' if self.weight is None else '\\added\\',
                     group='\\non-added\\' if self.group is None else '\\added\\',
                     train_size=self.train_size,
-                    val_size=self.val_size)
+                    val_size=self.val_size,
+                    ftype=self.ftype)
 
     @property
     def hash(self):
         return hashing(self.info)
 
-    def _uniform_val_index(self, index):
-        return np.array([], dtype=int)
-
-    def _random_val_index(self, index):
+    def _random_index(self):
+        index = np.arange(self.size)
         if self.group is None:
             weight = (None if self.weight is None
                       else weightprob(self.weight[index], abstolute=False))
@@ -83,20 +89,26 @@ class Foldify:
                     sub_index, size=nval, replace=False, p=weight)
                 val_index = np.concatenate((val_index, lab_val_index))
         val_index.sort()
-        return val_index
-
-    def get(self, i):
-        index = np.arange(self.size)
-        if self.ftype == 'uniform':
-            val_index = self._uniform_val_index(index)
-
-        elif self.ftype == 'random':
-            self.random.seed(None if self.seed is None else self.seed + i)
-            val_index = self._random_val_index(index)
-
         train = np.ones(self.size, dtype=bool)
         train[val_index] = False
         train_index = index[train]
+        return train_index, val_index
+
+    def _rolling_index(self, i):
+        ntrain = self.train_size[0]
+        nval = self.val_size[0]
+        ind = int(i * (self.size-ntrain-nval) / self.nfolds)
+        train_index = np.arange(ind, ind+ntrain)
+        val_index = np.arange(ind+ntrain, ind+ntrain+nval)
+        return train_index, val_index
+
+    def get(self, i):
+        self.random.seed(None if self.seed is None else self.seed + i)
+        if self.ftype == 'random':
+            train_index, val_index = self._random_index()
+        elif self.ftype == 'rolling':
+            train_index, val_index = self._rolling_index(i)
+
         if not self.sorted:
             self.random.shuffle(train_index)
             self.random.shuffle(val_index)
@@ -115,8 +127,45 @@ class Foldify:
 
         return '\n\t'.join(lst)
 
+    def Random(size,
+               nfolds=5,
+               val_prop=0.2,
+               sorted=True,
+               weight=None,
+               group=None,
+               seed=555,
+               datasets=None):
+        return Foldify(size=size,
+                       nfolds=nfolds,
+                       val_prop=val_prop,
+                       sorted=sorted,
+                       weight=weight,
+                       group=group,
+                       seed=seed,
+                       datasets=datasets,
+                       ftype='random')
+
+    def Rolling(size,
+                nfolds=5,
+                train_prop=0.2,
+                val_prop=0.2,
+                sorted=True,
+                seed=555,
+                datasets=None):
+        return Foldify(size=size,
+                       nfolds=nfolds,
+                       train_prop=train_prop,
+                       val_prop=val_prop,
+                       sorted=sorted,
+                       weight=None,
+                       group=None,
+                       seed=seed,
+                       datasets=datasets,
+                       ftype='rolling')
+
 
 def _format_summary(summary):
+
     return (f"\ttime: {int(summary['time'] // 3600)}h " +
             f"{int((summary['time'] % 3600) // 60)}m "
             f"{int(summary['time'] % 60)}s   " +
