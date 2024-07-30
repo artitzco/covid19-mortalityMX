@@ -259,6 +259,8 @@ class Search():
                 self.kernel()
                 if self.frozen:
                     if self.niter == session.niter:
+                        if self.verbose in [2, 3]:
+                            print(self.verbosing)
                         self.frozen = False
                         self.chrono = Chronometer(initial=session.time)
                 else:
@@ -317,7 +319,7 @@ class Search():
             iter_dict = self.iter_dict
             if iter_dict is not None:
                 self.iter_history.append(iter_dict)
-            if self.verbose == [2, 3]:
+            if self.verbose in [2, 3]:
                 print(self.verbosing)
             self.chrono.start()
 
