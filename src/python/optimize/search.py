@@ -93,11 +93,25 @@ class Cooling:
                        itermax=itermax, lag=lag, tmax=tmax, tmin=tmin)
 
 
-class SearchSpace:
-    def __init__(self, solution, seed=None) -> None:
+class SearchSpace(Solution):
+
+    def __init__(self, solution, random=None, seed=None, name=None) -> None:
         self.solution = solution
+        self.solution.random = random
         if seed is not None:
-            self.seed = seed
+            self.solution.seed = seed
+        if name is not None:
+            self.solution.name = name
+
+        def generator(_):
+            x = self.solution.generator(_)
+            while not self.is_feasible(x):
+                x = self.solution.generator(_)
+            return x
+        self.generator = generator
+
+    def is_feasible(self, _):
+        return True
 
     @property
     def seed(self):
@@ -111,13 +125,40 @@ class SearchSpace:
     def random(self):
         return self.solution.random
 
-    def is_feasible(self, _):
-        return True
+    @random.setter
+    def random(self, random):
+        self.solution.random = random
 
-    def new(self):
-        x = self.solution.new()
+    @property
+    def name(self):
+        return self.solution.name
+
+    @name.setter
+    def name(self, name):
+        self.solution.name = name
+
+    def dimension(self, x):
+        return self.solution.dimension(x)
+
+    def copy(self, x):
+        return self.solution.copy(x)
+
+    def encode(self, x):
+        return self.solution.encode(x)
+
+    def decode(self, x, to_dict=False):
+        return self.solution.decode(x, to_dict)
+
+    def write(self, x):
+        return self.solution.write(x)
+
+    def read(self, x):
+        return self.solution.read(x)
+
+    def mutate(self, x, **kwargs):
+        x = self.solution.mutate(x, **kwargs)
         while not self.is_feasible(x):
-            x = self.solution.new()
+            x = self.solution.mutate(x, **kwargs)
         return x
 
     def cross(self, x, y, **kwargs):
@@ -126,17 +167,14 @@ class SearchSpace:
             x = self.solution.cross(x, y, **kwargs)
         return x
 
-    def mutate(self, x, **kwargs):
-        x = self.solution.mutate(x, **kwargs)
-        while not self.is_feasible(x):
-            x = self.solution.mutate(x, **kwargs)
-        return x
-
     def neighbor(self, x, **kwargs):
         x = self.solution.neighbor(x, **kwargs)
         while not self.is_feasible(x):
             x = self.solution.neighbor(x, **kwargs)
         return x
+
+    def entropy(self, x):
+        return self.solution.entropy(x)
 
     def __repr__(self) -> str:
         return f'SearchSpace({self.solution})'
@@ -184,7 +222,23 @@ class Chronometer:
         return self.get() - last
 
 
+def _evaluation_criterial(function, search_space, argstype):
+    if argstype == 'args':
+        if not isinstance(search_space.solution, ndSolution):
+            raise ValueError(
+                "argstype='args' is only avaiable for ndSolution instances.")
+        return lambda x: function(*search_space.decode(x))
+    elif argstype == 'kwargs':
+        return lambda x: function(
+            **search_space.decode(x, to_dict=True))
+    elif argstype == 'literal':
+        return lambda x: function(x)
+    else:
+        return lambda x: function(search_space.decode(x))
+
+
 class Search():
+
     def __init__(self, function,
                  search_space,
                  initial=None,
@@ -215,24 +269,14 @@ class Search():
                         orient='records')
             else:
                 print(f"Session not found:'{infile}'.")
-        self.search_space = (SearchSpace(search_space)
-                             if isinstance(search_space, Solution) else search_space)
-        self.solution = self.search_space.solution
+        self.search_space = (search_space
+                             if isinstance(search_space, SearchSpace)
+                             else SearchSpace(search_space))
         if seed is not None:
             self.search_space.seed = seed
-        if argstype == 'args':
-            if not isinstance(self.solution, ndSolution):
-                raise ValueError(
-                    "argstype='args' is only avaiable for ndSolution instances.")
-            self.function = lambda x: function(*self.solution.decode(x))
-        elif argstype == 'kwargs':
-            self.function = lambda x: function(
-                **self.solution.decode(x, to_dict=True))
-        elif argstype == 'literal':
-            self.function = lambda x: function(x)
-        else:
-            self.function = lambda x: function(self.solution.decode(x))
-
+        self.function = _evaluation_criterial(function=function,
+                                              search_space=self.search_space,
+                                              argstype=argstype)
         inf = float('Inf')
         self.itermax = inf if itermax is None else itermax
         self.evalmax = inf if evalmax is None else evalmax
@@ -247,7 +291,7 @@ class Search():
         self.xmin = None
         self.fmin = inf
         if initial is not None:
-            self.eval(self.solution.read(initial))
+            self.eval(self.search_space.read(initial))
         self.begin()
 
         if self.itermax < inf or self.evalmax < inf or self.timemax < inf:
@@ -259,10 +303,12 @@ class Search():
                 self.kernel()
                 if self.frozen:
                     if self.niter == session.niter:
-                        if self.verbose in [2, 3]:
+                        self.chrono = Chronometer(
+                            initial=session.time, paused=True)
+                        if self.verbose in (2, 3):
                             print(self.verbosing)
                         self.frozen = False
-                        self.chrono = Chronometer(initial=session.time)
+                        self.chrono.start()
                 else:
                     self.iter_saving()
         self.chrono.pause()
@@ -272,7 +318,7 @@ class Search():
 
     @property
     def random(self):
-        return self.solution.random
+        return self.search_space.random
 
     def __str__(self) -> str:
         return 'session:\n' + str(self.session)
@@ -287,7 +333,7 @@ class Search():
                               neval=self.neval,
                               fmin=self.fmin,
                               xmin=(None if self.xmin is None
-                                    else self.solution.write(self.xmin)),
+                                    else self.search_space.write(self.xmin)),
                               history=(None if len(self.history) == 0
                                        else pd.DataFrame(self.history)),
                               iter_history=(None if len(self.iter_history) == 0
@@ -301,7 +347,7 @@ class Search():
                 f'\n\teval: {self.neval}/{self.evalmax}'
                 f'\n\ttime: {round(self.chrono.get(), 3)}/{None if self.timemax is None else  round(self.timemax, 3)}'
                 f'\n\tfmin: {self.fmin}'
-                f'\n\txmin: {None if self.xmin is None else self.solution.decode(self.xmin)}')
+                f'\n\txmin: {None if self.xmin is None else self.search_space.decode(self.xmin)}')
 
     def eval_saving(self):
         if not self.frozen:
@@ -309,7 +355,7 @@ class Search():
             eval_dict = self.eval_dict
             if eval_dict is not None:
                 self.history.append(eval_dict)
-            if self.verbose in [1, 3]:
+            if self.verbose in (1, 3):
                 print(self.verbosing)
             self.chrono.start()
 
@@ -319,13 +365,13 @@ class Search():
             iter_dict = self.iter_dict
             if iter_dict is not None:
                 self.iter_history.append(iter_dict)
-            if self.verbose in [2, 3]:
+            if self.verbose in (2, 3):
                 print(self.verbosing)
             self.chrono.start()
 
     def Fx(self):
         if self.frozen:
-            if self.history[self.neval - 1]['x'] != self.solution.write(self.x):
+            if self.history[self.neval - 1]['x'] != self.search_space.write(self.x):
                 raise ValueError("Something went wrong with the generation of random solutions.\n"
                                  "Possible causes:\n"
                                  "\t- Initial conditions have been changed\n"
@@ -351,7 +397,7 @@ class Search():
                     niter=self.niter,
                     fmin=self.fmin,
                     fx=self.fx,
-                    x=self.solution.write(self.x))
+                    x=self.search_space.write(self.x))
 
     @property
     def iter_dict(self):
@@ -371,7 +417,8 @@ class RandomSearch(Search):
 
 class LocalSearch(Search):
 
-    def __init__(self, function, search_space, initial=None, cooling=None, itermax=None, evalmax=None, timemax=None, infile=None, outfile=None, seed=None, argstype=None, verbose=0) -> None:
+    def __init__(self, function, search_space, modality='exponential', initial=None, cooling=None, itermax=None, evalmax=None, timemax=None, infile=None, outfile=None, seed=None, argstype=None, verbose=0) -> None:
+        self.modality = modality
         self.xact = None
         self.fact = float('inf')
         cooling = Cooling.Not(tmax=0) if cooling is None else cooling
@@ -406,13 +453,20 @@ class LocalSearch(Search):
                     fact=self.fact,
                     fmin=self.fmin,
                     fx=self.fx,
-                    x=self.solution.write(self.x))
+                    x=self.search_space.write(self.x))
 
     def kernel(self):
         if self.xact is None:
             self.eval(self.search_space.new())
-        else:
+        elif self.modality == 'neighbor':
             self.eval(self.search_space.neighbor(self.xact))
+        elif self.modality == 'uniform':
+            prob = 1 / self.search_space.dimension(self.xact)
+            self.eval(self.search_space.mutate(self.xact, prob=prob))
+        elif self.modality == 'exponential':
+            prob = - (math.log(self.random.rand()) /
+                      self.search_space.dimension(self.xact))
+            self.eval(self.search_space.mutate(self.xact, prob=prob))
 
 
 def weightprob(weight, abstolute=False):
@@ -550,15 +604,35 @@ def tournament(data1, weight1, data2=None, weight2=None, size=None, replace=True
 class GeneticSearch(Search):
 
     def __init__(self, function, search_space, initial=None, itermax=None, evalmax=None, timemax=None, infile=None, outfile=None, seed=None, argstype=None, verbose=0) -> None:
-        if isinstance(initial, (int, float)):
-            initial = RandomSearch(function, search_space, itermax=initial,
-                                   seed=seed, argstype=argstype).session.history
-        if not isinstance(initial, pd.DataFrame):
-            raise ValueError('Initial value must be a pd.Dataframe instance')
-        search_space = (SearchSpace(search_space)
-                        if isinstance(search_space, Solution) else search_space)
-        self.population = pd.DataFrame(dict(fx=initial['fx'],
-                                            x=[search_space.solution.read(x) for x in initial['x']]))
+        search_space = (search_space
+                        if isinstance(search_space, SearchSpace)
+                        else SearchSpace(search_space))
+
+        if isinstance(initial, tuple):
+            popsize, popiter = initial
+            pop_search = LocalSearch(lambda x: -search_space.entropy(x),
+                                     ndSolution(search_space,
+                                                dimension=popsize),
+                                     modality='neighbor',
+                                     itermax=popiter,
+                                     argstype='literal',
+                                     seed=seed)
+            fun = _evaluation_criterial(function=function,
+                                        search_space=search_space,
+                                        argstype=argstype)
+            self.population = pd.DataFrame(dict(fx=[fun(x) for x in pop_search.xmin],
+                                                x=pop_search.xmin))
+        else:
+            if isinstance(initial, (int, float)):
+                initial = RandomSearch(function, search_space, itermax=initial,
+                                       seed=seed, argstype=argstype).session.history
+
+            elif not isinstance(initial, pd.DataFrame):
+                raise ValueError(
+                    'Initial value must be a pd.Dataframe instance')
+
+            self.population = pd.DataFrame(dict(fx=initial['fx'],
+                                                x=[search_space.read(x) for x in initial['x']]))
         super().__init__(function, search_space, None, itermax, evalmax, timemax,
                          infile, outfile, seed, argstype, verbose)
 
@@ -594,8 +668,9 @@ class GeneticSearch(Search):
         for _ in range(popsize):
             choised = self.random.choice(parents.x, size=2, replace=False)
             new = self.search_space.cross(*choised)
-            dim = popsize * self.search_space.solution.dimension(new)
-            new = self.search_space.mutate(new, prob=1/dim)
+            dim = popsize * self.search_space.dimension(new)
+            prob = - math.log(self.random.rand()) / dim
+            new = self.search_space.mutate(new, prob=prob)
             solutions.append(new)
         return solutions
 
@@ -645,73 +720,75 @@ def entropy_model_inv(final_entropy, initial_entropy, a=0, b=1, c=1):
 
 class MarkovGeneticSearch(GeneticSearch):
 
-    def __init__(self, function, search_space, entropy_limit=0.05, initial=None, itermax=None,
+    def __init__(self, function, search_space, entropy_limit=0.05,  initial=None, itermax=None,
                  evalmax=None, timemax=None, infile=None, outfile=None, seed=None, argstype=None, verbose=0) -> None:
         self.entropy_limit = entropy_limit
         super().__init__(function, search_space, initial, itermax,
                          evalmax, timemax, infile, outfile, seed, argstype, verbose)
 
     def begin(self):
-        if len(self.iter_history) > 0:
-            self.initial_entropy = [hist['initial_entropy']
-                                    for hist in self.iter_history]
-            self.final_entropy = [hist['final_entropy']
-                                  for hist in self.iter_history]
-            self.probability = [hist['probability']
-                                for hist in self.iter_history]
-        else:
-            self.initial_entropy = []
-            self.final_entropy = []
-            self.probability = [float('nan')]
+        if len(self.iter_history) == 0:
+            self.probability = float('nan')
+            self.case_a = False
+            self.cte = 1
             self.iter_saving()
 
     @property
     def iter_dict(self):
-        self.initial_entropy.append(
-            self.final_entropy[-1] if len(self.final_entropy) > 0 else float('nan'))
-        self.final_entropy.append(
-            self.solution.entropy(self.population.x.tolist()))
+        if len(self.iter_history) > 0:
+            initial_entropy = self.iter_history[-1]['final_entropy']
+        else:
+            initial_entropy = float('nan')
+        final_entropy = self.search_space.entropy(self.population.x.tolist())
+        if self.case_a:
+            if final_entropy >= self.entropy_limit:
+                self.cte *= 0.9
+            else:
+                self.cte /= 0.9
+
         return dict(time=self.chrono.get(),
                     niter=self.niter,
                     neval=self.neval,
                     fmin=self.population.fx.min(),
                     fmean=self.population.fx.mean(),
                     fstd=self.population.fx.std(),
-                    initial_entropy=self.initial_entropy[-1],
-                    final_entropy=self.final_entropy[-1],
-                    probability=self.probability[-1])
+                    initial_entropy=initial_entropy,
+                    final_entropy=final_entropy,
+                    probability=self.probability,
+                    cte=self.cte)
 
     def selection(self):
         return self.population
 
     def reproduction(self, parents):
-        entropy = self.solution.entropy(self.population.x.tolist())
+        if self.frozen:
+            self.cte = self.iter_history[self.niter-1]['cte']
+        entropy = self.search_space.entropy(self.population.x.tolist())
         solutions = []
         popsize = len(self.population)
 
-        case_a = entropy <= self.entropy_limit
+        self.case_a = entropy <= self.entropy_limit
         case_b = entropy > self.entropy_limit
-        if case_a:
-            prob = entropy_model_inv(
-                final_entropy=self.entropy_limit,
-                initial_entropy=entropy,
-                a=0.0,
-                b=1.0,
-                c=0.95)
+        if self.case_a:
+            prob = entropy_model_inv(final_entropy=self.entropy_limit,
+                                     initial_entropy=entropy,
+                                     a=0.0,
+                                     b=1.0,
+                                     c=1) * self.cte
+            prob = max(min(prob, 1), 0)
         else:
             mean_prob = 0
         for _ in range(popsize):
             choised = self.random.choice(parents.x, size=2, replace=False)
             new = self.search_space.cross(*choised)
             if case_b:
-                dim = popsize * self.search_space.solution.dimension(new)
+                dim = popsize * self.search_space.dimension(new)
                 prob = - math.log(self.random.rand()) / dim
                 prob = min(prob, 1)
                 mean_prob += prob
             new = self.search_space.mutate(new, prob=prob)
             solutions.append(new)
-        self.probability.append(mean_prob / popsize
-                                if case_b else prob)
+        self.probability = (mean_prob / popsize) if case_b else prob
         return solutions
 
     def replacement(self, _, childs):

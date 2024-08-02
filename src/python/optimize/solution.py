@@ -113,6 +113,7 @@ class ndSolution(Solution, tuple):
         super().__init__(random, seed, name, generator)
         for sol in self:
             sol.random = self.random
+        self.dictable = len(kwargs) > 0
 
     def dimension(self, x):
         return sum([sol.dimension(x) for sol, x in zip(self, x)])
@@ -125,10 +126,13 @@ class ndSolution(Solution, tuple):
 
     def decode(self, x, to_dict=False):
         if to_dict:
-            dic = dict()
-            for sol, x in zip(self, x):
-                dic.update(sol.decode(x, True))
-            return dic
+            if self.dictable:
+                dic = dict()
+                for sol, x in zip(self, x):
+                    dic.update(sol.decode(x, True))
+                return dic
+            else:
+                return {self.name: [sol.decode(x) for sol, x in zip(self, x)]}
         return [sol.decode(x) for sol, x in zip(self, x)]
 
     def write(self, x):
@@ -242,7 +246,9 @@ class Category(Solution):
         return x
 
     def entropy(self, x):
-        return entropy(x, self.keys)
+        if len(self.keys) > 1:
+            return entropy(x, self.keys)
+        return 0
 
     def __repr__(self) -> str:
         cad = ', '.join([str(x) for x in self.keys])

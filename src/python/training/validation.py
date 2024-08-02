@@ -1,4 +1,5 @@
 from src.python.training.util import hashing, weightprob, Chronometer
+
 import numpy as np
 import pickle
 import os
@@ -219,7 +220,7 @@ def eval_model(model,
         history, summary = [], []
     else:
         summary = session['data'][hparam_hash]['summary']
-    if verbose == 1 and new:
+    if verbose in (1, 2, 3) and new:
         print('Hyperparameters:\n\t',
               '   '.join([f'{k}: {v}' for k, v in hparam.items()]))
     chrono = Chronometer(paused=True)
@@ -228,12 +229,13 @@ def eval_model(model,
         if new:
             fold = foldify.get(i)
             chrono.start()
-            fitted = fit(fold['train_set'], fold['val_set'], verbose=0)
+            fitted = fit(fold['train_set'], fold['val_set'],
+                         verbose=verbose-1 if verbose in (2, 3) else 0)
             chrono.pause()
             history.append(fitted.history)
             summary.append({'time': chrono.partial(),
                             **{k: v[-1] for k, v in history[-1].items()}})
-        if isinstance(summary, list) and verbose == 1:
+        if isinstance(summary, list) and verbose in (1, 2, 3):
             print(f'Fold {i+1}/{foldify.nfolds}:')
             print(_format_summary(summary[-1]))
     if new:
@@ -244,7 +246,7 @@ def eval_model(model,
         session['data'][hparam_hash] = {'hparam': hparam,
                                         'history': history[-1] if simplified else history,
                                         'summary': summary[-1] if simplified else summary}
-    if verbose == 1 and new:
+    if verbose in (1, 2, 3) and new:
         print('Total:')
         print(_format_summary(summary[-1]
                               if isinstance(summary, list) else summary))

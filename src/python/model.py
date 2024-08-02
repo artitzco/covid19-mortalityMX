@@ -6,7 +6,6 @@ from tensorflow.keras import regularizers
 
 def model_v1(input_dim,
              neurons,
-             deep,
              optimizer,
              learning_rate,
              momentum,
@@ -18,12 +17,7 @@ def model_v1(input_dim,
              batch_normalization,
              regularization,
              regularization_factor,
-             dropout,
              dropout_rate):
-    """
-    Recordar condición:
-        deep <= 1 + math.log(neurons / 2.0) / math.log(2)
-    """
 
     # Optimizador
 
@@ -60,21 +54,16 @@ def model_v1(input_dim,
     # Modelo
     model = Sequential()
     model.add(Input(shape=(input_dim,)))
-    model.add(Dense(neurons,
-                    activation=activation,
-                    kernel_regularizer=kernel_regularizer,
-                    kernel_initializer=kernel_initializer))
 
-    model.add(BatchNormalization()) if batch_normalization else None
-    model.add(Dropout(dropout_rate)) if dropout else None
-
-    for x in range(deep - 1):
-        model.add(Dense(neurons//(2)**(1+x),
-                        activation=activation,
-                        kernel_regularizer=kernel_regularizer,
-                        kernel_initializer=kernel_initializer))
-        model.add(BatchNormalization()) if batch_normalization else None
-        model.add(Dropout(dropout_rate)) if dropout else None
+    for size in neurons:
+        if size > 0:
+            model.add(Dense(size,
+                            activation=activation,
+                            kernel_regularizer=kernel_regularizer,
+                            kernel_initializer=kernel_initializer))
+            if batch_normalization:
+                model.add(BatchNormalization())
+            model.add(Dropout(dropout_rate))
 
     model.add(Dense(1, activation='sigmoid',
                     kernel_initializer=('glorot_uniform' if initializer == 'uniform'
@@ -91,15 +80,15 @@ def model_v1(input_dim,
                                                                     validation_data=val_set,
                                                                     batch_size=batch_size,
                                                                     epochs=epochs,
-                                                                    verbose=verbose)
-    }
+                                                                    verbose=verbose)}
 
 
 def model_v1_hparams(input_dim,
+                     architecture,
                      neurons,
-                     deep,
                      optimizer,
-                     optimizer_param,
+                     learning_rate,
+                     momentum,
                      activation,
                      activation_alpha,
                      initializer,
@@ -108,31 +97,23 @@ def model_v1_hparams(input_dim,
                      batch_normalization,
                      regularization,
                      regularization_factor,
-                     dropout,
                      dropout_rate):
     def select(value, cond, dtype=float):
         return dtype(value if cond else 0)
 
     return dict(input_dim=int(input_dim),
-                neurons=int(neurons),
-                deep=int(deep),
+                neurons=[int(n) if a else 0
+                         for a, n in zip(architecture, neurons)],
                 optimizer=optimizer,
-                learning_rate=(select(optimizer_param[0], optimizer == 'Adam') +
-                               select(optimizer_param[1], optimizer == 'Nadam') +
-                               select(optimizer_param[2][0], optimizer == 'RMSprop') +
-                               select(optimizer_param[3][0], optimizer == 'SGD')),
-                momentum=(select(optimizer_param[2][1], optimizer == 'RMSprop') +
-                          select(optimizer_param[3][1], optimizer == 'SGD')),
+                learning_rate=float(learning_rate),
+                momentum=select(momentum, optimizer in ('RMSprop', 'SGD')),
                 activation=activation,
-                activation_alpha=(select(activation_alpha[0], activation == 'ELU') +
-                                  select(activation_alpha[1], activation == 'LeakyReLU')),
+                activation_alpha=float(activation_alpha),
                 initializer=initializer,
                 batch_size=int(batch_size),
                 epochs=int(epochs),
                 batch_normalization=batch_normalization,
                 regularization=regularization,
-
-                regularization_factor=(select(regularization_factor[0], regularization == 'l1') +
-                                       select(regularization_factor[1], regularization == 'l2')),
-                dropout=dropout,
-                dropout_rate=select(dropout_rate, dropout))
+                regularization_factor=select(
+                    regularization_factor, regularization in ('l1', 'l2')),
+                dropout_rate=select(dropout_rate, float(dropout_rate)))
